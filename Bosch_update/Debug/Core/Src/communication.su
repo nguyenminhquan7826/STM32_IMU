@@ -1,0 +1,10 @@
+../Core/Src/communication.c:58:17:CRC16_CCITT	32	static
+../Core/Src/communication.c:87:13:RingBuffer_Put	24	static
+../Core/Src/communication.c:99:12:RingBuffer_Get	16	static
+../Core/Src/communication.c:112:26:UART_StartTailTransfer	8	static
+../Core/Src/communication.c:120:6:UART_Send_IT	24	static
+../Core/Src/communication.c:174:6:HAL_UART_TxCpltCallback	16	static
+../Core/Src/communication.c:199:6:HAL_UART_RxCpltCallback	16	static
+../Core/Src/communication.c:208:6:Parse_Command	24	static
+../Core/Src/communication.c:229:13:Send_VehicleTelemetry	512	static
+../Core/Src/communication.c:332:6:Communication_Task	32	static

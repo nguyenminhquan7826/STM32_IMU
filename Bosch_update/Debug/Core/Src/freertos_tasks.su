@@ -1,0 +1,3 @@
+../Core/Inc/pid.h:47:20:PID_SetSetpoint	16	static
+../Core/Src/freertos_tasks.c:14:13:Motor_Servo_Task	16	static
+../Core/Src/freertos_tasks.c:28:6:MX_FREERTOS_Init	152	static,ignoring_inline_asm
