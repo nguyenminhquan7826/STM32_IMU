@@ -82,6 +82,7 @@ typedef struct
     uint8_t chip_id;
     uint8_t detected;
     uint8_t initialized;
+    uint8_t startup_waited;
     BNO055_OperationMode_t operation_mode;
     HAL_StatusTypeDef last_status;
     uint32_t read_error_count;
@@ -100,6 +101,26 @@ typedef struct
     uint32_t consecutive_errors;
     uint32_t last_update_ms;
 } IMU_TaskStatus_t;
+
+/* stage: 0 idle, 1 power-on wait, 2 detecting, 3 configuring, 4 ready,
+ * 5 streaming. operation: 1 address probe, 2 register read, 3 write,
+ * 4 unexpected CHIP_ID/mode value. Snapshots are captured after HAL returns;
+ * HAL may already have cleared some error bits. Read only when valid=1. */
+typedef struct {
+    uint8_t valid, stage, operation, reg, address_7bit;
+    uint8_t busy_flag, scl_level, sda_level;
+    HAL_StatusTypeDef hal_status;
+    uint32_t timestamp_ms, i2c_state, i2c_lock, i2c_error_code, sr2;
+    uint32_t fault_number;
+} IMU_I2CFault_t;
+extern volatile IMU_I2CFault_t g_imu_i2c_first_fault;
+extern volatile IMU_I2CFault_t g_imu_i2c_last_fault;
+extern volatile uint32_t g_imu_i2c_fault_count;
+extern volatile uint32_t g_imu_probe_attempts;
+extern volatile uint32_t g_imu_init_attempts;
+extern volatile uint8_t g_imu_stage;
+/* Try the last/preferred address first. BUSY/TIMEOUT do not trigger a scan. */
+HAL_StatusTypeDef BNO055_DetectAvailable(BNO055_HandleTypeDef *device);
 
 /* Defined once in imu.c. Useful in STM32CubeIDE Live Expressions. */
 extern BNO055_HandleTypeDef g_bno055;

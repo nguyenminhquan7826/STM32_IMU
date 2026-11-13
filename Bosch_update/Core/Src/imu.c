@@ -1,6 +1,7 @@
 #include "imu.h"
 #include "imu_config.h"
 #include "cmsis_os.h"
+#include "task.h"
 #include <stddef.h>
 #include <string.h>
 
@@ -39,6 +40,57 @@
 BNO055_HandleTypeDef g_bno055;
 volatile BNO055_Data_t g_imu_latest;
 volatile IMU_TaskStatus_t g_imu_task_status;
+volatile IMU_I2CFault_t g_imu_i2c_first_fault;
+volatile IMU_I2CFault_t g_imu_i2c_last_fault;
+volatile uint32_t g_imu_i2c_fault_count;
+volatile uint32_t g_imu_probe_attempts;
+volatile uint32_t g_imu_init_attempts;
+volatile uint8_t g_imu_stage;
+
+/* Driver operations are task-context only. Yield once the scheduler is running. */
+static void BNO055_Delay(uint32_t ms)
+{
+    if (xTaskGetSchedulerState() == taskSCHEDULER_RUNNING)
+        (void)osDelay(ms);
+    else
+        HAL_Delay(ms);
+}
+
+static void IMU_RecordFault(BNO055_HandleTypeDef *device,
+                            uint8_t operation, uint8_t reg,
+                            HAL_StatusTypeDef status)
+{
+    IMU_I2CFault_t fault;
+    if (status == HAL_OK || device == NULL || device->i2c == NULL) return;
+    memset(&fault, 0, sizeof(fault));
+    fault.stage = g_imu_stage; fault.operation = operation; fault.reg = reg;
+    fault.address_7bit = (uint8_t)(device->address >> 1U);
+    fault.hal_status = status; fault.timestamp_ms = HAL_GetTick();
+    fault.i2c_state = (uint32_t)device->i2c->State;
+    fault.i2c_lock = (uint32_t)device->i2c->Lock;
+    fault.i2c_error_code = device->i2c->ErrorCode;
+    fault.scl_level = 255U; fault.sda_level = 255U;
+    if (device->i2c->Instance != NULL) {
+        /* Deliberately do not read SR1: SR1->SR2 reads can clear ADDR. */
+        fault.sr2 = device->i2c->Instance->SR2;
+        fault.busy_flag = (fault.sr2 & I2C_SR2_BUSY) != 0U;
+    }
+    if (device->i2c->Instance == I2C1) {
+        const uint32_t pins = GPIOB->IDR;
+        fault.scl_level = (pins & GPIO_PIN_8) != 0U;
+        fault.sda_level = (pins & GPIO_PIN_9) != 0U;
+    }
+    fault.fault_number = ++g_imu_i2c_fault_count;
+    /* Single writer. Publish valid last so debugger can detect partial copies. */
+    g_imu_i2c_last_fault.valid = 0U;
+    g_imu_i2c_last_fault = fault;
+    g_imu_i2c_last_fault.valid = 1U;
+    if (g_imu_i2c_first_fault.valid == 0U) {
+        g_imu_i2c_first_fault = fault;
+        g_imu_i2c_first_fault.valid = 1U;
+    }
+}
+
 
 // đọc length từ thanh nghi first_register
 static HAL_StatusTypeDef BNO055_ReadRegisters(
@@ -64,6 +116,7 @@ static HAL_StatusTypeDef BNO055_ReadRegisters(
         length,
         BNO055_I2C_TIMEOUT_MS);
 
+    IMU_RecordFault(device, 2U, first_register, device->last_status);
     return device->last_status;
 }
 
@@ -86,6 +139,7 @@ static HAL_StatusTypeDef BNO055_WriteRegister(
         1U,
         BNO055_I2C_TIMEOUT_MS);
 
+    IMU_RecordFault(device, 3U, reg, device->last_status);
     return device->last_status;
 }
 
@@ -148,14 +202,21 @@ HAL_StatusTypeDef BNO055_Detect(BNO055_HandleTypeDef *device)
     device->initialized = 0U;
     device->last_status = HAL_ERROR;
 
-    /* The BNO055 can require about 650 ms after power-on. */
-    HAL_Delay(BNO055_STARTUP_DELAY_MS);
+    /* Wait once per Attach, not once per address or retry. */
+    if (device->startup_waited == 0U) {
+        g_imu_stage = 1U;
+        BNO055_Delay(BNO055_STARTUP_DELAY_MS);
+        device->startup_waited = 1U;
+    }
+    g_imu_stage = 2U;
+    g_imu_probe_attempts++;
 
     device->last_status = HAL_I2C_IsDeviceReady(
         device->i2c,
         device->address,
         BNO055_I2C_TRIALS,
         BNO055_I2C_READY_TIMEOUT_MS);
+    IMU_RecordFault(device, 1U, 255U, device->last_status);
 
     if (device->last_status != HAL_OK)
     {
@@ -178,12 +239,36 @@ HAL_StatusTypeDef BNO055_Detect(BNO055_HandleTypeDef *device)
     if (device->chip_id != BNO055_CHIP_ID_EXPECTED)
     {
         device->last_status = HAL_ERROR;
+        IMU_RecordFault(device, 4U, BNO055_REG_CHIP_ID, HAL_ERROR);
         return HAL_ERROR;
     }
 
     device->detected = 1U;
     device->last_status = HAL_OK;
     return HAL_OK;
+}
+
+HAL_StatusTypeDef BNO055_DetectAvailable(BNO055_HandleTypeDef *device)
+{
+    HAL_StatusTypeDef status;
+    uint16_t preferred;
+    if (device == NULL || device->i2c == NULL) return HAL_ERROR;
+    preferred = device->address;
+    if (preferred != BNO055_I2C_ADDRESS_LOW && preferred != BNO055_I2C_ADDRESS_HIGH)
+        preferred = BNO055_I2C_ADDRESS;
+    BNO055_SetAddress(device, preferred);
+    status = BNO055_Detect(device);
+    /* A busy/timeout bus will not be repaired by changing slave address. */
+    if (status != HAL_ERROR) return status;
+    BNO055_SetAddress(device, preferred == BNO055_I2C_ADDRESS_HIGH ?
+                      BNO055_I2C_ADDRESS_LOW : BNO055_I2C_ADDRESS_HIGH);
+    status = BNO055_Detect(device);
+    if (status != HAL_OK) {
+        /* Preserve the previously preferred address for the next retry. */
+        BNO055_SetAddress(device, preferred);
+        device->last_status = status;
+    }
+    return status;
 }
 
 HAL_StatusTypeDef BNO055_SetOperationMode(
@@ -233,7 +318,7 @@ HAL_StatusTypeDef BNO055_SetOperationMode(
         }
 
         /* Datasheet requirement: any operation mode -> CONFIGMODE is 19 ms. */
-        HAL_Delay(BNO055_MODE_TO_CONFIG_MS);
+        BNO055_Delay(BNO055_MODE_TO_CONFIG_MS);
     }
 
     if (mode != BNO055_MODE_CONFIG)
@@ -246,7 +331,7 @@ HAL_StatusTypeDef BNO055_SetOperationMode(
         }
 
         /* Datasheet requirement: CONFIGMODE -> operation mode is 7 ms. */
-        HAL_Delay(BNO055_CONFIG_TO_MODE_MS);
+        BNO055_Delay(BNO055_CONFIG_TO_MODE_MS);
     }
 
     if (BNO055_ReadRegisters(device,
@@ -262,6 +347,7 @@ HAL_StatusTypeDef BNO055_SetOperationMode(
     if (current_mode != (uint8_t)mode)
     {
         device->last_status = HAL_ERROR;
+        IMU_RecordFault(device, 4U, BNO055_REG_OPR_MODE, HAL_ERROR);
         return HAL_ERROR;
     }
 
@@ -283,10 +369,13 @@ HAL_StatusTypeDef BNO055_Init(BNO055_HandleTypeDef *device,
 
     device->initialized = 0U;
 
-    if (BNO055_Detect(device) != HAL_OK)
+    g_imu_init_attempts++;
+    if ((device->detected == 0U || device->chip_id != BNO055_CHIP_ID_EXPECTED) &&
+        BNO055_Detect(device) != HAL_OK)
     {
         return device->last_status;
     }
+    g_imu_stage = 3U;
 
     // chuyển sang chế độ config để cấu hình các thông số dưới đây
     if (BNO055_SetOperationMode(device, BNO055_MODE_CONFIG) != HAL_OK)
@@ -309,7 +398,7 @@ HAL_StatusTypeDef BNO055_Init(BNO055_HandleTypeDef *device,
     {
         return device->last_status;
     }
-    HAL_Delay(10U);
+    BNO055_Delay(10U);
 
     /*
      * UNIT_SEL = 0:
@@ -342,6 +431,7 @@ HAL_StatusTypeDef BNO055_Init(BNO055_HandleTypeDef *device,
     }
 
     device->initialized = 1U;
+    g_imu_stage = 4U;
     device->last_status = HAL_OK;
     return HAL_OK;
 }
@@ -363,6 +453,7 @@ HAL_StatusTypeDef BNO055_ReadData(BNO055_HandleTypeDef *device,
         return HAL_ERROR;
     }
 
+    g_imu_stage = 5U;
     //  đọc khôi dữ liệu từ sensor.
     if (BNO055_ReadRegisters(device,
                              BNO055_REG_ACC_DATA_X_LSB,
@@ -489,6 +580,10 @@ static void IMU_SetInitialized(uint8_t initialized,
 void IMU_Task_Attach(I2C_HandleTypeDef *i2c)
 {
     BNO055_Attach(&g_bno055, i2c);
+    memset((void *)&g_imu_i2c_first_fault, 0, sizeof(g_imu_i2c_first_fault));
+    memset((void *)&g_imu_i2c_last_fault, 0, sizeof(g_imu_i2c_last_fault));
+    g_imu_i2c_fault_count = 0U; g_imu_probe_attempts = 0U;
+    g_imu_init_attempts = 0U; g_imu_stage = 0U;
     memset((void *)&g_imu_latest, 0, sizeof(g_imu_latest));
     memset((void *)&g_imu_task_status, 0, sizeof(g_imu_task_status));
     memset((void *)&g_imu_config_latest, 0, sizeof(g_imu_config_latest));
@@ -520,16 +615,7 @@ void IMU_Task(void const *argument)
         }
         HAL_StatusTypeDef detect_status;
 
-        /* Thử địa chỉ 0x28 */
-        BNO055_SetAddress(&g_bno055, BNO055_I2C_ADDRESS_LOW);
-        detect_status = BNO055_Detect(&g_bno055);
-
-        if (detect_status != HAL_OK)
-        {
-            /* Không thấy 0x28, thử 0x29 */
-            BNO055_SetAddress(&g_bno055, BNO055_I2C_ADDRESS_HIGH);
-            detect_status = BNO055_Detect(&g_bno055);
-        }
+        detect_status = BNO055_DetectAvailable(&g_bno055);
 
         if (detect_status != HAL_OK)
         {
