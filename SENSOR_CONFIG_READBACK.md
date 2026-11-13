@@ -181,3 +181,10 @@ failures. Startup tests mock the recovery entry point and do not execute the
 infinite IMU task. None of this is a physical waveform or ARM firmware build.
 The next board test must repeat debug-reset with unchanged IMU power and retain
 first_fault plus g_imu_bus_recovery if it fails.
+
+## Runtime clock snapshot
+
+For the repeated ~2% source/host clock-rate mismatch, the same branch now
+captures `g_clock_config_latest` once after peripheral setup. It is read-only;
+source clocks/timers and existing I2C recovery are unchanged. See
+[CLOCK_DIAGNOSTICS.md](CLOCK_DIAGNOSTICS.md) for expected fields and limits.

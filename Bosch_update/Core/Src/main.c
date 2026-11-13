@@ -22,6 +22,7 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "clock_diag.h"
 #include "freertos_tasks.h"   // file quan ly cac task == file logic
 /* USER CODE END Includes */
 
@@ -119,6 +120,7 @@ int main(void)
   MX_TIM1_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
+  ClockDiag_Capture(); /* Readback only: no oscillator/timer changes. */
   // Bắt đầu nhận UART2 (giao tiếp Pi)
   /* Start UART reception */
 #if 1

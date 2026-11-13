@@ -51,4 +51,51 @@ HAL_StatusTypeDef HAL_I2C_DeInit(I2C_HandleTypeDef *);
 HAL_StatusTypeDef HAL_I2C_Init(I2C_HandleTypeDef *);
 void HAL_Delay(uint32_t);
 uint32_t HAL_GetTick(void);
+
+/* Clock readback HAL/CMSIS model (no clock setters are exposed). */
+typedef struct {
+  volatile uint32_t CR, PLLCFGR, CFGR, DCKCFGR;
+} RCC_TypeDef;
+typedef struct {
+  volatile uint32_t CR1, DIER, SMCR, PSC, ARR, CNT;
+} TIM_TypeDef;
+extern RCC_TypeDef test_rcc;
+extern TIM_TypeDef test_tim4;
+extern uint32_t SystemCoreClock;
+#define RCC (&test_rcc)
+#define TIM4 (&test_tim4)
+#define HSI_VALUE 16000000U
+#define HSE_VALUE 25000000U
+#define RCC_CFGR_SWS 0xCU
+#define RCC_CFGR_SWS_Pos 2U
+#define RCC_CFGR_HPRE 0xF0U
+#define RCC_CFGR_HPRE_Pos 4U
+#define RCC_CFGR_PPRE1 0x1C00U
+#define RCC_CFGR_PPRE1_Pos 10U
+#define RCC_PLLCFGR_PLLM 0x3FU
+#define RCC_PLLCFGR_PLLN 0x7FC0U
+#define RCC_PLLCFGR_PLLN_Pos 6U
+#define RCC_PLLCFGR_PLLP 0x30000U
+#define RCC_PLLCFGR_PLLP_Pos 16U
+#define RCC_PLLCFGR_PLLQ 0xF000000U
+#define RCC_PLLCFGR_PLLQ_Pos 24U
+#define RCC_PLLCFGR_PLLSRC (1U << 22)
+#define RCC_CR_HSITRIM 0xF8U
+#define RCC_CR_HSITRIM_Pos 3U
+#define RCC_CR_HSICAL 0xFF00U
+#define RCC_CR_HSICAL_Pos 8U
+#define RCC_CR_HSEBYP (1U << 18)
+#define RCC_CR_HSERDY (1U << 17)
+#define RCC_DCKCFGR_TIMPRE (1U << 24)
+#define TIM_CR1_CEN 1U
+#define TIM_CR1_CMS (3U << 5)
+#define TIM_DIER_UIE 1U
+#define TIM_SMCR_SMS 7U
+#define TIM_SMCR_ECE (1U << 14)
+typedef enum { HAL_TICK_FREQ_1KHZ = 1 } HAL_TickFreqTypeDef;
+HAL_TickFreqTypeDef HAL_GetTickFreq(void);
+uint32_t HAL_RCC_GetSysClockFreq(void);
+uint32_t HAL_RCC_GetHCLKFreq(void);
+uint32_t HAL_RCC_GetPCLK1Freq(void);
+uint32_t HAL_RCC_GetPCLK2Freq(void);
 #endif
