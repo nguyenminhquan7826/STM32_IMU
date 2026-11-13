@@ -1,4 +1,5 @@
 #include "imu.h"
+#include "imu_config.h"
 #include "cmsis_os.h"
 #include <stddef.h>
 #include <string.h>
@@ -480,6 +481,7 @@ static void IMU_SetInitialized(uint8_t initialized,
     if (initialized == 0U)
     {
         g_imu_latest.valid = 0U;
+        g_imu_config_latest.valid = 0U;
     }
     taskEXIT_CRITICAL();
 }
@@ -489,6 +491,7 @@ void IMU_Task_Attach(I2C_HandleTypeDef *i2c)
     BNO055_Attach(&g_bno055, i2c);
     memset((void *)&g_imu_latest, 0, sizeof(g_imu_latest));
     memset((void *)&g_imu_task_status, 0, sizeof(g_imu_task_status));
+    memset((void *)&g_imu_config_latest, 0, sizeof(g_imu_config_latest));
     g_imu_task_status.last_status = HAL_ERROR;
 }
 
@@ -557,6 +560,16 @@ void IMU_Task(void const *argument)
         g_imu_task_status.last_status = HAL_OK;
         g_imu_task_status.consecutive_errors = 0U;
         taskEXIT_CRITICAL();
+
+        /* Read-only diagnostics in this IMU task, outside the acquisition loop.
+         * Failure is visible to debugger but does not disable working telemetry. */
+        {
+            BNO055_ConfigSnapshot_t config_snapshot;
+            (void)BNO055_ReadConfig(&g_bno055, &config_snapshot);
+            taskENTER_CRITICAL();
+            g_imu_config_latest = config_snapshot;
+            taskEXIT_CRITICAL();
+        }
 
         last_wake_time = xTaskGetTickCount();
 
