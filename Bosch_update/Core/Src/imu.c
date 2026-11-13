@@ -1,5 +1,6 @@
 #include "imu.h"
 #include "imu_config.h"
+#include "imu_bus_recovery.h"
 #include "cmsis_os.h"
 #include "task.h"
 #include <stddef.h>
@@ -584,6 +585,7 @@ void IMU_Task_Attach(I2C_HandleTypeDef *i2c)
     memset((void *)&g_imu_i2c_last_fault, 0, sizeof(g_imu_i2c_last_fault));
     g_imu_i2c_fault_count = 0U; g_imu_probe_attempts = 0U;
     g_imu_init_attempts = 0U; g_imu_stage = 0U;
+    memset((void *)&g_imu_bus_recovery, 0, sizeof(g_imu_bus_recovery));
     memset((void *)&g_imu_latest, 0, sizeof(g_imu_latest));
     memset((void *)&g_imu_task_status, 0, sizeof(g_imu_task_status));
     memset((void *)&g_imu_config_latest, 0, sizeof(g_imu_config_latest));
@@ -620,6 +622,8 @@ void IMU_Task(void const *argument)
         if (detect_status != HAL_OK)
         {
             IMU_SetInitialized(0U, detect_status);
+            g_imu_stage = 6U;
+            (void)IMU_TryRecoverBus(g_bno055.i2c, detect_status);
             osDelay(IMU_TASK_RETRY_DELAY_MS);
             continue;
         }
@@ -637,6 +641,8 @@ void IMU_Task(void const *argument)
             g_imu_latest.valid = 0U;
             taskEXIT_CRITICAL();
 
+            g_imu_stage = 6U;
+            (void)IMU_TryRecoverBus(g_bno055.i2c, init_status);
             osDelay(IMU_TASK_RETRY_DELAY_MS);
             continue;
         }
@@ -699,6 +705,8 @@ void IMU_Task(void const *argument)
                 IMU_TASK_REINIT_ERROR_THRESHOLD)
             {
                 IMU_SetInitialized(0U, status);
+                g_imu_stage = 6U;
+                (void)IMU_TryRecoverBus(g_bno055.i2c, status);
                 break;
             }
 

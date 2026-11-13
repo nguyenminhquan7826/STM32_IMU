@@ -103,7 +103,7 @@ typedef struct
 } IMU_TaskStatus_t;
 
 /* stage: 0 idle, 1 power-on wait, 2 detecting, 3 configuring, 4 ready,
- * 5 streaming. operation: 1 address probe, 2 register read, 3 write,
+ * 5 streaming, 6 recovery check/wait. operation: 1 address probe, 2 register read, 3 write,
  * 4 unexpected CHIP_ID/mode value. Snapshots are captured after HAL returns;
  * HAL may already have cleared some error bits. Read only when valid=1. */
 typedef struct {

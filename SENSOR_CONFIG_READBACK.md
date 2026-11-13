@@ -82,7 +82,7 @@ g_imu_config_latest
 ```
 
 Stage: 0 idle, 1 power-on wait, 2 detection, 3 configuration, 4 initialized,
-5 streaming read. Stage alone is NOT an initialized/healthy flag.
+5 streaming read, 6 recovery check/retry wait. Stage alone is NOT an initialized/healthy flag.
 
 Each fault snapshot contains:
 
@@ -104,8 +104,8 @@ be normal; distinguish by operation/address and subsequent initialized state.
 
 These are snapshots after HAL returns. HAL may already clear AF or release its
 lock before returning, so they are not full on-wire traces or proof of a NACK.
-No GPIO clock pulses, I2C reset or automatic electrical-bus recovery is added.
-A persistent bus fault still requires diagnosis; this patch does not establish
+Bounded I2C1 bus recovery is now attempted after failures as described below.
+A persistent bus fault still requires diagnosis; host tests do not establish
 that the intermittent hardware failure is fixed.
 
 Additional host regression (actual imu.c + imu_config.c against fake HAL/RTOS):
@@ -123,3 +123,61 @@ pre-scheduler/task delay selection, first-fault persistence after success,
 probe/read/write/verification failures and sampled bus levels. HAL and RTOS
 are mocked, and the infinite task loop is not run. A full ARM build and board
 power-cycle/debug-reset testing in CubeIDE remain required.
+
+
+## Recovery for BUSY with SDA held low
+
+Hardware fault evidence supplied on the board: operation=1 (address probe),
+address=0x29, HAL_BUSY, state=0x20 READY, Lock=0 unlocked, ErrorCode=0x20 TIMEOUT,
+SR2=2 (BUSY), SCL=1, SDA=0. This locates a held bus rather than a software HAL
+lock. It can occur after a debug reset interrupts I2C, but does not prove that
+the BNO is the only possible source holding SDA low (a short can do so too).
+
+After failed detection/configuration or 10 consecutive streaming failures, the
+IMU task now checks recovery eligibility. Only I2C1/PB8/PB9 with HAL READY and
+unlocked is eligible. No action is taken after success or idle high lines with
+BUSY clear. An active/locked HAL transfer is not interrupted. Only the IMU task
+may use this bus; this is not a multi-master recovery implementation.
+
+Recovery: HAL DeInit disables I2C and releases pins; pins become open-drain
+outputs with no internal pullups. SET releases a pin, it does not drive high.
+Wait up to about 5ms for SCL high, pulse SCL at most 9 times until SDA releases,
+then generate a STOP. Restore released GPIO and reset/reinitialize I2C1 (MSP
+restores AF_OD). Even after a timeout the peripheral restore is attempted.
+A STOP setup can add one SCL rising edge beyond the counted recovery pulses.
+No unbounded wait: typical GPIO clear tens of ms, bounded to under ~100ms at
+1ms tick in the tested scenarios, subject to scheduler delays. Retry still has
+backoff. No sensor power switching is attempted, and fixed wiring shorts or a
+permanently held SCL/SDA must not be expected to recover.
+
+New source `Core/Src/imu_bus_recovery.c` must appear in CubeIDE's Clean/Build
+log, together with imu.c and imu_config.c. Do not flash stale Debug binaries.
+
+Add `g_imu_bus_recovery` in Expressions:
+- attempts/successes/failures/skipped: recovery counters, not sensor read counts.
+- pulses: 0..9 for the most recent attempt, excluding STOP setup.
+- scl_before/sda_before and scl_after/sda_after: sampled line levels.
+- trigger_status, last_status, timestamp_ms; in_progress=0 after completion.
+
+HAL_OK recovery only means bus released/reinitialization succeeded (or no
+recovery was needed). Sensor health still requires initialized=1 and growing
+successful_reads. Fault_count can be nonzero after a successful recovery;
+first_fault intentionally remains recorded. Watch for counts stabilizing,
+successful_reads increasing, and recovery successes versus failures.
+
+Host recovery regression:
+
+```bash
+gcc -std=c11 -Wall -Wextra -Werror -Itests/stubs -IBosch_update/Core/Inc \
+  tests/test_imu_bus_recovery.c Bosch_update/Core/Src/imu_bus_recovery.c \
+  -o /tmp/test_imu_bus_recovery
+/tmp/test_imu_bus_recovery
+```
+
+Tests use the actual recovery algorithm with a GPIO/HAL/RTOS model: release
+after three clocks, permanently low SDA (max9), permanently low SCL, internal
+BUSY with high lines, idle no-op, active/locked transfer gating, DeInit/Init
+failures. Startup tests mock the recovery entry point and do not execute the
+infinite IMU task. None of this is a physical waveform or ARM firmware build.
+The next board test must repeat debug-reset with unchanged IMU power and retain
+first_fault plus g_imu_bus_recovery if it fails.

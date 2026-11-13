@@ -14,6 +14,22 @@ extern GPIO_TypeDef test_gpiob;
 #define GPIO_PIN_8 (1U << 8)
 #define GPIO_PIN_9 (1U << 9)
 #define I2C_SR2_BUSY (1U << 1)
+#define HAL_I2C_STATE_READY 0x20U
+#define HAL_UNLOCKED 0U
+#define GPIO_MODE_OUTPUT_OD 1U
+#define GPIO_NOPULL 0U
+#define GPIO_SPEED_FREQ_LOW 0U
+typedef struct {
+  uint32_t Pin, Mode, Pull, Speed, Alternate;
+} GPIO_InitTypeDef;
+typedef enum { GPIO_PIN_RESET = 0, GPIO_PIN_SET = 1 } GPIO_PinState;
+void HAL_GPIO_Init(GPIO_TypeDef *, GPIO_InitTypeDef *);
+void HAL_GPIO_WritePin(GPIO_TypeDef *, uint16_t, GPIO_PinState);
+GPIO_PinState HAL_GPIO_ReadPin(GPIO_TypeDef *, uint16_t);
+void test_i2c_force_reset(void);
+void test_i2c_release_reset(void);
+#define __HAL_RCC_I2C1_FORCE_RESET() test_i2c_force_reset()
+#define __HAL_RCC_I2C1_RELEASE_RESET() test_i2c_release_reset()
 typedef struct {
   I2C_TypeDef *Instance;
   uint32_t State, Lock, ErrorCode;
@@ -31,6 +47,8 @@ HAL_StatusTypeDef HAL_I2C_Mem_Write(I2C_HandleTypeDef *, uint16_t, uint16_t,
                                     uint16_t, uint8_t *, uint16_t, uint32_t);
 HAL_StatusTypeDef HAL_I2C_IsDeviceReady(I2C_HandleTypeDef *, uint16_t, uint32_t,
                                         uint32_t);
+HAL_StatusTypeDef HAL_I2C_DeInit(I2C_HandleTypeDef *);
+HAL_StatusTypeDef HAL_I2C_Init(I2C_HandleTypeDef *);
 void HAL_Delay(uint32_t);
 uint32_t HAL_GetTick(void);
 #endif

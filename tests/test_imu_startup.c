@@ -1,9 +1,20 @@
 #include "imu.h"
+#include "imu_bus_recovery.h"
 #include "imu_config.h"
 #include "task.h"
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
+/* Startup unit does not run IMU_Task; recovery algorithm has a separate test.
+ */
+volatile IMU_BusRecovery_t g_imu_bus_recovery;
+HAL_StatusTypeDef IMU_TryRecoverBus(I2C_HandleTypeDef *i2c,
+                                    HAL_StatusTypeDef status) {
+  (void)i2c;
+  (void)status;
+  assert(!"Unexpected task recovery in startup unit test");
+  return HAL_ERROR;
+}
 I2C_TypeDef test_i2c1;
 GPIO_TypeDef test_gpiob;
 static uint8_t regs[256];
