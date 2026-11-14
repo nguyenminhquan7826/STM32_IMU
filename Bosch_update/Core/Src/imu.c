@@ -13,6 +13,9 @@
 #define BNO055_REG_UNIT_SEL            0x3BU        // chọn đơn vị đo
 #define BNO055_REG_OPR_MODE            0x3DU        //chọn chế độ hoạt động
 #define BNO055_REG_PWR_MODE            0x3EU        // chọn chế dộ nguồn
+#define BNO055_REG_SYS_TRIGGER         0x3FU
+#define BNO055_RESET_WAIT_MS           700U
+#define BNO055_RESET_POLL_TIMEOUT_MS   500U
 #define BNO055_REG_TEMP_SOURCE         0x40U        // chọn nguồn đo nhiệt độ
 
 #define BNO055_PAGE_0                  0x00U
@@ -384,6 +387,46 @@ HAL_StatusTypeDef BNO055_Init(BNO055_HandleTypeDef *device,
         return device->last_status;
     }
 
+    /* MCU-only debug resets leave the sensor powered. Start from a known
+     * sensor state too; this clears volatile calibration/offset state.
+     * One reset per Init, with bounded polling and no clock changes. */
+    if (BNO055_WriteRegister(device, BNO055_REG_SYS_TRIGGER, 0x20U) != HAL_OK)
+    {
+        return device->last_status;
+    }
+    device->detected = 0U;
+    device->chip_id = 0U;
+    BNO055_Delay(BNO055_RESET_WAIT_MS);
+    {
+        const uint32_t start_ms = HAL_GetTick();
+        uint8_t chip_id = 0U;
+        for (;;)
+        {
+            HAL_StatusTypeDef status = BNO055_ReadRegisters(
+                device, BNO055_REG_CHIP_ID, &chip_id, 1U);
+            if (status == HAL_OK && chip_id == BNO055_CHIP_ID_EXPECTED)
+            {
+                device->chip_id = chip_id;
+                device->detected = 1U;
+                break;
+            }
+            /* A held bus must go through the existing task bus recovery. */
+            if (status == HAL_BUSY)
+            {
+                return status;
+            }
+            if ((uint32_t)(HAL_GetTick() - start_ms) >=
+                BNO055_RESET_POLL_TIMEOUT_MS)
+            {
+                device->last_status = HAL_TIMEOUT;
+                IMU_RecordFault(device, 4U, BNO055_REG_CHIP_ID, HAL_TIMEOUT);
+                return HAL_TIMEOUT;
+            }
+            BNO055_Delay(10U);
+        }
+    }
+    BNO055_Delay(50U);
+
     // chọn đọc trang thanh ghi đầu tiên
     if (BNO055_WriteRegister(device,
                              BNO055_REG_PAGE_ID,
@@ -545,6 +588,11 @@ HAL_StatusTypeDef BNO055_ReadData(BNO055_HandleTypeDef *device,
         status_bytes[BNO055_STATUS_OFFSET_SYS_STAT];
     sample.system_error =
         status_bytes[BNO055_STATUS_OFFSET_SYS_ERR];
+    /* Transport success and fusion health are deliberately independent.
+     * Keep samples/errors visible for diagnostics, even during fusion startup.
+     * Magnetometer calibration is not an acceptance requirement. */
+    sample.fusion_healthy = (sample.system_status == 5U &&
+                             sample.system_error == 0U) ? 1U : 0U;
     sample.valid = 1U;
 
     /*

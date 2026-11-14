@@ -68,6 +68,8 @@ typedef struct
 
     uint8_t system_status;
     uint8_t system_error;
+    /* Status only: not a calibration or physical accuracy guarantee. */
+    uint8_t fusion_healthy;
 
     /* Filled by the application/task after a successful driver read. */
     uint32_t timestamp_ms;

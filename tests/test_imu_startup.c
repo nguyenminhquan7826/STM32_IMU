@@ -25,6 +25,11 @@ static uint16_t first_address;
 static HAL_StatusTypeDef probe_status = HAL_OK, read_status = HAL_OK;
 static int only_low_address, ignore_mode_write;
 static int fail_write_reg = -1;
+static unsigned reset_writes;
+static uint32_t reset_ready_at, reset_boot_ms = 800;
+static int reset_never_ready;
+static HAL_StatusTypeDef reset_poll_status;
+static int reset_poll_failures;
 uint32_t HAL_GetTick(void) { return tick; }
 void HAL_Delay(uint32_t ms) {
   hal_wait += ms;
@@ -59,6 +64,11 @@ HAL_StatusTypeDef HAL_I2C_Mem_Read(I2C_HandleTypeDef *i, uint16_t addr,
   read_calls++;
   if (read_status != HAL_OK)
     return read_status;
+  if (reg == 0 && reset_writes && reset_poll_failures > 0) {
+    reset_poll_failures--; return reset_poll_status;
+  }
+  if (reg == 0 && reset_writes)
+    regs[0] = (!reset_never_ready && tick >= reset_ready_at) ? 0xA0 : 0;
   memcpy(out, regs + reg, len);
   tick++;
   return HAL_OK;
@@ -73,6 +83,12 @@ HAL_StatusTypeDef HAL_I2C_Mem_Write(I2C_HandleTypeDef *i, uint16_t addr,
   write_calls++;
   if (reg == fail_write_reg)
     return HAL_ERROR;
+  if (reg == 0x3F && *in == 0x20) {
+    assert(regs[0x3D] == 0); /* Must enter CONFIG before sensor reset. */
+    reset_writes++;
+    reset_ready_at = tick + reset_boot_ms;
+    memset(regs, 0, sizeof(regs));
+  }
   if (!(ignore_mode_write && reg == 0x3D))
     memcpy(regs + reg, in, len);
   return HAL_OK;
@@ -86,6 +102,8 @@ static void reset(void) {
   ready_calls = read_calls = write_calls = only_low_address =
       ignore_mode_write = 0;
   fail_write_reg = -1;
+  reset_writes = 0; reset_never_ready = 0; reset_boot_ms = 800;
+  reset_poll_status = HAL_OK; reset_poll_failures = 0;
   probe_status = read_status = HAL_OK;
   memset(&bus, 0, sizeof(bus));
   bus.Instance = I2C1;
@@ -101,6 +119,7 @@ int main(void) {
   assert(first_address == 0x52 && ready_calls == 1);
   assert(BNO055_Init(&d, BNO055_MODE_NDOF) == HAL_OK);
   assert(ready_calls == 1);
+  assert(reset_writes == 1 && regs[0x3D] == 0x0C);
   assert(hal_wait == 0 && task_wait >= 700);
   reset();
   only_low_address = 1;
@@ -175,6 +194,35 @@ int main(void) {
   assert(sample.gyro_x_dps==-1.f&&sample.gyro_y_dps==2.f&&sample.gyro_z_dps==3.f);
   assert(sample.yaw_deg==10.f&&sample.roll_deg==4.f&&sample.pitch_deg==-5.f);
   assert(sample.read_end_ms-sample.read_start_ms==2&&sample.timestamp_ms==sample.read_end_ms);
+  assert(sample.valid && sample.fusion_healthy);
+  regs[0x3A] = 9;
+  assert(BNO055_ReadData(&d, &sample) == HAL_OK);
+  assert(sample.valid && !sample.fusion_healthy && sample.system_error == 9);
+  regs[0x3A] = 0; regs[0x39] = 1;
+  assert(BNO055_ReadData(&d, &sample) == HAL_OK);
+  assert(sample.valid && !sample.fusion_healthy);
+  reset();
+  regs[0x3D] = 0x0C; regs[0x3A] = 9;
+  assert(BNO055_Init(&d, BNO055_MODE_NDOF) == HAL_OK);
+  assert(regs[0x3A] == 0 && regs[0x3D] == 0x0C && reset_writes == 1);
+  regs[0x39] = 5; /* All calibration fields remain zero: not a health gate. */
+  assert(BNO055_ReadData(&d, &sample) == HAL_OK);
+  assert(sample.valid && sample.fusion_healthy && sample.calibration_mag == 0);
+  reset(); reset_poll_status = HAL_BUSY; reset_poll_failures = 1;
+  assert(BNO055_Init(&d, BNO055_MODE_NDOF) == HAL_BUSY);
+  assert(!d.initialized && reset_writes == 1);
+  reset(); reset_poll_status = HAL_ERROR; reset_poll_failures = 2;
+  assert(BNO055_Init(&d, BNO055_MODE_NDOF) == HAL_OK);
+  assert(reset_poll_failures == 0 && d.initialized);
+  reset(); reset_poll_status = HAL_TIMEOUT; reset_poll_failures = 2;
+  assert(BNO055_Init(&d, BNO055_MODE_NDOF) == HAL_OK);
+  assert(reset_poll_failures == 0 && d.initialized);
+  reset(); reset_never_ready = 1;
+  assert(BNO055_Init(&d, BNO055_MODE_NDOF) == HAL_TIMEOUT);
+  assert(!d.initialized && reset_writes == 1 && tick < 2500);
+  reset(); fail_write_reg = 0x3F;
+  assert(BNO055_Init(&d, BNO055_MODE_NDOF) == HAL_ERROR);
+  assert(!d.initialized && reset_writes == 0);
   puts("Preferred address, single startup wait/probe, scheduler delay and "
        "persistent fault capture PASS");
 }
