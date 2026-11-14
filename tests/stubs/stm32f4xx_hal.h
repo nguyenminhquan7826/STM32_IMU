@@ -59,6 +59,14 @@ typedef struct {
 typedef struct {
   volatile uint32_t CR1, DIER, SMCR, PSC, ARR, CNT;
 } TIM_TypeDef;
+typedef struct {TIM_TypeDef *Instance;} TIM_HandleTypeDef;
+typedef struct {void *Instance;} UART_HandleTypeDef;
+#define USART2 ((void*)2)
+HAL_StatusTypeDef HAL_UART_Transmit_IT(UART_HandleTypeDef*,uint8_t*,uint16_t);
+HAL_StatusTypeDef HAL_UART_Receive_IT(UART_HandleTypeDef*,uint8_t*,uint16_t);
+#define TIM_CHANNEL_ALL 0x3CU
+#define __HAL_TIM_GET_COUNTER(h) ((h)->Instance->CNT)
+HAL_StatusTypeDef HAL_TIM_Encoder_Start(TIM_HandleTypeDef*,uint32_t);
 extern RCC_TypeDef test_rcc;
 extern TIM_TypeDef test_tim4;
 extern uint32_t SystemCoreClock;

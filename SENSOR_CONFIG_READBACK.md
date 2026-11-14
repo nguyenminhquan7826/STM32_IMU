@@ -1,7 +1,8 @@
 # Read-only BNO055 configuration snapshot
 
-Branch: sensor-config-diagnostics. TEL v1, UART commands, motor PID, sensor units
-and axis mapping are unchanged. No new packet is sent on UART. This firmware
+Branch: sensor-config-diagnostics. Sensor units, clock and axis mapping remain
+unchanged. The current branch adds TEL v2 and measured encoder/PID intervals;
+see SENSOR_PIPELINE_DIAGNOSTICS.md before updating. This firmware
 change requires an STM32CubeIDE rebuild and flash before it can be observed.
 It does not change Kalman on Pi.
 

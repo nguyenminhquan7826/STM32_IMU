@@ -71,6 +71,7 @@ typedef struct
 
     /* Filled by the application/task after a successful driver read. */
     uint32_t timestamp_ms;
+    uint32_t read_start_ms, read_end_ms;
     uint32_t sequence;
     uint8_t valid;
 } BNO055_Data_t;

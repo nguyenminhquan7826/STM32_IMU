@@ -1,4 +1,5 @@
 #include "encoder.h"
+#include "encoder_counter.h"
 
 #include "FreeRTOS.h"
 #include "cmsis_os.h"
@@ -13,6 +14,7 @@ extern int motorSpeed;
 volatile uint8_t flag = 0U;
 volatile float car_speed_mps = 0.0f;
 volatile Encoder_Data_t g_encoder_latest;
+volatile Encoder_TaskStatus_t g_encoder_task_status;
 
 float pulses_to_mps(int pulses)
 {
@@ -44,6 +46,7 @@ uint8_t Encoder_GetLatest(
     snapshot.speed_mps = g_encoder_latest.speed_mps;
     snapshot.timestamp_ms = g_encoder_latest.timestamp_ms;
     snapshot.sequence = g_encoder_latest.sequence;
+    snapshot.interval_ms = g_encoder_latest.interval_ms;
     snapshot.valid = g_encoder_latest.valid;
     taskEXIT_CRITICAL();
 
@@ -66,66 +69,50 @@ uint8_t Encoder_GetLatest(
 void Encoder_Task(void const *argument)
 {
     TickType_t last_wake_time;
-    uint16_t previous_counter;
-    int32_t total_ticks;
-
+    EncoderCounterState counter;
+    const float metres_per_count = GEAR_RATIO * (2.0f*M_PI*WHEEL_RADIUS_M)/PULSES_PER_REV;
     (void)argument;
-
-    (void)HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
-    previous_counter =
-        (uint16_t)__HAL_TIM_GET_COUNTER(&htim3);
-    total_ticks = 0;
-    last_wake_time = xTaskGetTickCount();
-
-    for (;;)
-    {
-        uint16_t current_counter;
-        int16_t pulse_delta;
-        float measured_speed_mps;
-        float output;
-        uint32_t timestamp_ms;
-
-        current_counter =
-            (uint16_t)__HAL_TIM_GET_COUNTER(&htim3);
-        timestamp_ms = HAL_GetTick();
-
-        /*
-         * Signed 16-bit subtraction handles one timer wrap correctly as long
-         * as fewer than 32768 counts occur during one 10 ms sample.
-         */
-        pulse_delta = (int16_t)(
-            (int32_t)current_counter -
-            (int32_t)previous_counter);
-
-        total_ticks += (int32_t)pulse_delta;
-        measured_speed_mps = pulses_to_mps((int)pulse_delta);
-
+    g_encoder_task_status.start_status = HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
+    if (g_encoder_task_status.start_status != HAL_OK) {
         taskENTER_CRITICAL();
-        car_speed_mps = measured_speed_mps;
-        g_encoder_latest.total_ticks = total_ticks;
-        g_encoder_latest.delta_ticks = pulse_delta;
-        g_encoder_latest.speed_mps = measured_speed_mps;
+        g_encoder_latest.valid = 0U;
+        g_encoder_task_status.initialized = 0U;
+        motorSpeed = 0;
+        taskEXIT_CRITICAL();
+        /* Keep telemetry alive to expose start_status; no PID on invalid feedback. */
+        for (;;) { osDelay(100U); }
+    }
+    EncoderCounter_Reset(&counter, (uint16_t)__HAL_TIM_GET_COUNTER(&htim3), HAL_GetTick());
+    g_encoder_task_status.initialized = 1U;
+    last_wake_time = xTaskGetTickCount();
+    for (;;) {
+        EncoderCounterSample sample;
+        uint32_t timestamp_ms;
+        uint16_t current_counter;
+        /* First sample also needs a nonzero measurement window. */
+        vTaskDelayUntil(&last_wake_time, pdMS_TO_TICKS(SAMPLE_MS));
+        current_counter = (uint16_t)__HAL_TIM_GET_COUNTER(&htim3);
+        timestamp_ms = HAL_GetTick();
+        if (!EncoderCounter_Update(&counter, current_counter, timestamp_ms, metres_per_count, &sample)) {
+            taskENTER_CRITICAL();
+            g_encoder_latest.valid = 0U;
+            g_encoder_task_status.zero_interval_samples++;
+            motorSpeed = 0;
+            taskEXIT_CRITICAL();
+            continue;
+        }
+        taskENTER_CRITICAL();
+        car_speed_mps = sample.speed_mps;
+        g_encoder_latest.total_ticks = sample.total_ticks;
+        g_encoder_latest.delta_ticks = sample.delta_ticks;
+        g_encoder_latest.speed_mps = sample.speed_mps;
         g_encoder_latest.timestamp_ms = timestamp_ms;
         g_encoder_latest.sequence++;
+        g_encoder_latest.interval_ms = sample.interval_ms;
         g_encoder_latest.valid = 1U;
+        g_encoder_task_status.last_interval_ms = sample.interval_ms;
         taskEXIT_CRITICAL();
-
-        output = PID_Update(
-            &pid,
-            measured_speed_mps,
-            SAMPLE_TIME_S);
-        motorSpeed = (int)output;
-
-        /*
-         * Do not call Send_SpeedFeedback() here at 100 Hz. The combined TEL
-         * packet is sent by Communication_Task at 50 Hz.
-         */
-
+        motorSpeed = (int)PID_Update(&pid, sample.speed_mps, sample.interval_ms*.001f);
         flag = 1U;
-        previous_counter = current_counter;
-
-        vTaskDelayUntil(
-            &last_wake_time,
-            pdMS_TO_TICKS(SAMPLE_MS));
     }
 }

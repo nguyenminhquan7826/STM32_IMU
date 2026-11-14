@@ -124,10 +124,7 @@ int main(void)
   // Bắt đầu nhận UART2 (giao tiếp Pi)
   /* Start UART reception */
 #if 1
-  if (HAL_UART_Receive_IT(&huart2, &rx_byte, 1) != HAL_OK)
-  {
-      Error_Handler();
-  }
+  /* Communication_Task owns USART2 receive initialization. */
 
   /* Start motor PWM */
   if (HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1) != HAL_OK)
@@ -154,8 +151,7 @@ int main(void)
 //      Error_Handler();
 //  }
   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
-  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
-  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
+  /* TIM3 is encoder-only; Encoder_Task starts it and checks HAL status. */
 
   /* Initial steering position */
   Servo_SetAngle(75);

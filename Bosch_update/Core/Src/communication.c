@@ -6,6 +6,7 @@
 
 #include "encoder.h"
 #include "imu.h"
+#include "telemetry_format.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -20,10 +21,18 @@ extern int motorSpeed;
 #define RX_BUFFER_SIZE                 128U
 #define RING_BUFFER_SIZE               128U
 #define TX_QUEUE_SIZE                  8U
-#define TX_MESSAGE_SIZE                224U
+#define TX_MESSAGE_SIZE                384U
 
-#define TELEMETRY_PROTOCOL_VERSION     1U
+#ifndef TELEMETRY_PROTOCOL_VERSION
+#define TELEMETRY_PROTOCOL_VERSION     2U
+#endif
+#if TELEMETRY_PROTOCOL_VERSION == 2U
+#define TELEMETRY_PERIOD_MS            40U /* Diagnostic payload: preserve UART headroom. */
+#elif TELEMETRY_PROTOCOL_VERSION == 1U
 #define TELEMETRY_PERIOD_MS            20U
+#else
+#error Unsupported telemetry version
+#endif
 #define TELEMETRY_ENCODER_MAX_AGE_MS   100U
 #define TELEMETRY_IMU_MAX_AGE_MS       100U
 
@@ -54,35 +63,6 @@ static uint32_t telemetry_sequence;
 
 volatile uint32_t g_uart_tx_drop_count;
 volatile uint32_t g_uart_tx_truncate_count;
-
-static uint16_t CRC16_CCITT(
-    const uint8_t *data,
-    size_t length)
-{
-    uint16_t crc = 0xFFFFU;			// khởi tạo thanh ghi crc rỗng
-    size_t i;
-
-    for (i = 0U; i < length; i++)
-    {
-        uint8_t bit;
-
-        crc ^= (uint16_t)data[i] << 8;
-
-        for (bit = 0U; bit < 8U; bit++)
-        {
-            if ((crc & 0x8000U) != 0U)
-            {
-                crc = (uint16_t)((crc << 1) ^ 0x1021U);
-            }
-            else
-            {
-                crc <<= 1;
-            }
-        }
-    }
-
-    return crc;
-}
 
 static void RingBuffer_Put(RingBuffer_t *ring, uint8_t value)
 {
@@ -230,103 +210,27 @@ static void Send_VehicleTelemetry(void)
 {
     Encoder_Data_t encoder = {0};
     BNO055_Data_t imu = {0};
-    uint8_t flags = 0U;
-    int steering_command_deg;
-    int pwm_command;
+    TelemetryRecord r = {0};
     char message[TX_MESSAGE_SIZE];
-    int payload_length;
-    int suffix_length;
-    uint16_t crc;
-
-    if (Encoder_GetLatest(
-            &encoder,
-            TELEMETRY_ENCODER_MAX_AGE_MS) != 0U)
-    {
-        flags |= TELEMETRY_FLAG_ENCODER_VALID;
+    if (Encoder_GetLatest(&encoder, TELEMETRY_ENCODER_MAX_AGE_MS)) r.flags |= TELEMETRY_FLAG_ENCODER_VALID;
+    if (IMU_GetLatest(&imu, TELEMETRY_IMU_MAX_AGE_MS)) r.flags |= TELEMETRY_FLAG_IMU_VALID;
+    r.sequence = ++telemetry_sequence; r.tx_ms = HAL_GetTick();
+    r.enc_sequence = encoder.sequence; r.enc_ms = encoder.timestamp_ms;
+    r.total_ticks = encoder.total_ticks; r.delta_ticks = encoder.delta_ticks;
+    r.speed = encoder.speed_mps; r.servo = steerAngle; r.pwm = motorSpeed;
+    r.imu_sequence = imu.sequence; r.imu_ms = imu.timestamp_ms;
+    r.ax = imu.linear_accel_x_mps2; r.ay = imu.linear_accel_y_mps2;
+    r.gyro_z_dps = imu.gyro_z_dps; r.yaw_deg = imu.yaw_deg;
+    r.calibration = imu.calibration_raw;
+    r.gyro_x_dps = imu.gyro_x_dps; r.gyro_y_dps = imu.gyro_y_dps;
+    r.roll_deg = imu.roll_deg; r.pitch_deg = imu.pitch_deg;
+    r.read_start_ms = imu.read_start_ms; r.read_end_ms = imu.read_end_ms;
+    r.enc_interval_ms = encoder.interval_ms;
+    r.system_status = imu.system_status; r.system_error = imu.system_error;
+    if (Telemetry_Format(message, sizeof(message), &r, TELEMETRY_PROTOCOL_VERSION) == 0U) {
+        g_uart_tx_truncate_count++; return;
     }
-
-    if (IMU_GetLatest(
-            &imu,
-            TELEMETRY_IMU_MAX_AGE_MS) != 0U)
-    {
-        flags |= TELEMETRY_FLAG_IMU_VALID;
-    }
-
-    /*
-     * These aligned int reads are atomic on Cortex-M4. The fields are commands:
-     * steering_command_deg is the servo command, not a measured road-wheel
-     * angle; pwm_command is the current PID output.
-     */
-    steering_command_deg = steerAngle;
-    pwm_command = motorSpeed;
-    telemetry_sequence++;
-
-    /*
-     * Protocol v1 fields:
-     * TEL,version,packet_seq,tx_ms,
-     *     enc_seq,enc_ms,enc_total,enc_delta,speed_mps,
-     *     steering_cmd_deg,pwm_cmd,
-     *     imu_seq,imu_ms,lin_ax,lin_ay,gyro_z_dps,yaw_deg,
-     *     calib,flags,crc16
-     *
-     * Signed enc_total/enc_delta encode direction.
-     * flags bit 0: encoder valid/fresh
-     * flags bit 1: IMU valid/fresh
-     * CRC-16/CCITT-FALSE covers bytes from "TEL" through flags, excluding
-     * the comma before crc16 and excluding CR/LF.
-     */
-    payload_length = snprintf(
-        message,
-        sizeof(message),
-        "TEL,%u,%lu,%lu,"
-        "%lu,%lu,%ld,%d,%.4f,%d,%d,"
-        "%lu,%lu,%.4f,%.4f,%.4f,%.2f,%02X,%u",
-        (unsigned int)TELEMETRY_PROTOCOL_VERSION,
-        (unsigned long)telemetry_sequence,
-        (unsigned long)HAL_GetTick(),
-        (unsigned long)encoder.sequence,
-        (unsigned long)encoder.timestamp_ms,
-        (signed long)encoder.total_ticks,
-        (int)encoder.delta_ticks,
-        (double)encoder.speed_mps,
-        steering_command_deg,
-        pwm_command,
-        (unsigned long)imu.sequence,
-        (unsigned long)imu.timestamp_ms,
-        (double)imu.linear_accel_x_mps2,
-        (double)imu.linear_accel_y_mps2,
-        (double)imu.gyro_z_dps,
-        (double)imu.yaw_deg,
-        (unsigned int)imu.calibration_raw,
-        (unsigned int)flags);
-
-    if ((payload_length <= 0) ||
-        ((uint32_t)payload_length >= (uint32_t)sizeof(message)))
-    {
-        g_uart_tx_truncate_count++;
-        return;
-    }
-
-    crc = CRC16_CCITT(
-        (const uint8_t *)message,
-        (size_t)payload_length);
-
-    suffix_length = snprintf(
-        &message[payload_length],
-        sizeof(message) - (size_t)payload_length,
-        ",%04X\r\n",
-        (unsigned int)crc);
-
-    if ((suffix_length > 0) &&
-        ((size_t)suffix_length <
-         (sizeof(message) - (size_t)payload_length)))
-    {
-        UART_Send_IT(message);
-    }
-    else
-    {
-        g_uart_tx_truncate_count++;
-    }
+    UART_Send_IT(message);
 }
 
 void Communication_Task(void const *argument)

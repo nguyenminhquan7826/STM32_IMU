@@ -31,6 +31,7 @@ typedef struct
     float speed_mps;
     uint32_t timestamp_ms;
     uint32_t sequence;
+    uint32_t interval_ms;
     uint8_t valid;
 } Encoder_Data_t;
 
@@ -41,7 +42,14 @@ typedef struct
  */
 extern volatile float car_speed_mps;
 extern volatile Encoder_Data_t g_encoder_latest;
+typedef struct {
+    uint8_t initialized;
+    HAL_StatusTypeDef start_status;
+    uint32_t last_interval_ms, zero_interval_samples;
+} Encoder_TaskStatus_t;
+extern volatile Encoder_TaskStatus_t g_encoder_task_status;
 
+/* Legacy nominal 10ms conversion; Encoder_Task uses measured interval instead. */
 float pulses_to_mps(int pulses);
 void Encoder_Task(void const *argument);
 

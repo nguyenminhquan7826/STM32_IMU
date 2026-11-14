@@ -444,6 +444,7 @@ HAL_StatusTypeDef BNO055_ReadData(BNO055_HandleTypeDef *device,
     uint8_t status_bytes[BNO055_STATUS_BURST_LENGTH];
     uint8_t calibration;
     BNO055_Data_t sample;
+    uint32_t read_start_ms, read_end_ms;
 
     // kiểm tra đầu vào
     if ((device == NULL) ||
@@ -455,6 +456,7 @@ HAL_StatusTypeDef BNO055_ReadData(BNO055_HandleTypeDef *device,
     }
 
     g_imu_stage = 5U;
+    read_start_ms = HAL_GetTick();
     //  đọc khôi dữ liệu từ sensor.
     if (BNO055_ReadRegisters(device,
                              BNO055_REG_ACC_DATA_X_LSB,
@@ -475,7 +477,11 @@ HAL_StatusTypeDef BNO055_ReadData(BNO055_HandleTypeDef *device,
         return device->last_status;
     }
 
+    read_end_ms = HAL_GetTick();
     memset(&sample, 0, sizeof(sample));
+    sample.read_start_ms = read_start_ms;
+    sample.read_end_ms = read_end_ms;
+    sample.timestamp_ms = read_end_ms;
 
     // gia tốc (bao gồm trọng lực)
     sample.accel_x_mps2 =
@@ -676,7 +682,7 @@ void IMU_Task(void const *argument)
 
             if (status == HAL_OK)
             {
-                sample.timestamp_ms = HAL_GetTick();
+                sample.timestamp_ms = sample.read_end_ms;
                 sample.sequence = ++sequence;
                 sample.valid = 1U;
 

@@ -3,7 +3,8 @@
 Branch: sensor-config-diagnostics. The code only reads clock/timer state; it does
 not switch HSI/HSE, trim the oscillator, change PLL/TIM4, scale HAL timestamps,
 or alter FreeRTOS/PID/gyro parameters. Existing IMU bus recovery is retained.
-TEL format is unchanged, and no extra UART packet is sent.
+The clock readback itself sends no UART packet. The current branch uses TEL v2
+for sensor diagnostics; see SENSOR_PIPELINE_DIAGNOSTICS.md.
 
 Two independent 120s trials reported source seconds per host second of
 1.020673210227752 and 1.0201971297374661. This readback helps distinguish a

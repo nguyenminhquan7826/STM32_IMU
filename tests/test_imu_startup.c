@@ -60,6 +60,7 @@ HAL_StatusTypeDef HAL_I2C_Mem_Read(I2C_HandleTypeDef *i, uint16_t addr,
   if (read_status != HAL_OK)
     return read_status;
   memcpy(out, regs + reg, len);
+  tick++;
   return HAL_OK;
 }
 HAL_StatusTypeDef HAL_I2C_Mem_Write(I2C_HandleTypeDef *i, uint16_t addr,
@@ -167,6 +168,13 @@ int main(void) {
   assert(BNO055_Init(&d, BNO055_MODE_NDOF) == HAL_ERROR);
   assert(g_imu_i2c_first_fault.operation == 4 &&
          g_imu_i2c_first_fault.reg == 0x3D);
+  reset();assert(BNO055_Init(&d,BNO055_MODE_NDOF)==HAL_OK);
+  regs[0x14]=0xf0;regs[0x15]=0xff;regs[0x16]=32;regs[0x18]=48;
+  regs[0x1a]=160;regs[0x1c]=64;regs[0x1e]=0xb0;regs[0x1f]=0xff;regs[0x39]=5;
+  assert(BNO055_ReadData(&d,&sample)==HAL_OK);
+  assert(sample.gyro_x_dps==-1.f&&sample.gyro_y_dps==2.f&&sample.gyro_z_dps==3.f);
+  assert(sample.yaw_deg==10.f&&sample.roll_deg==4.f&&sample.pitch_deg==-5.f);
+  assert(sample.read_end_ms-sample.read_start_ms==2&&sample.timestamp_ms==sample.read_end_ms);
   puts("Preferred address, single startup wait/probe, scheduler delay and "
        "persistent fault capture PASS");
 }
