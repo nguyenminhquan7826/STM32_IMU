@@ -7,8 +7,14 @@ extern "C" {
 
 #include "main.h"
 #include "pid.h"
+#include "command_guard.h"
 
 #include <stdint.h>
+
+extern volatile CommandGuard g_command_guard;
+void Control_GetCommand(CommandGuard *output);
+void Control_Stop(uint8_t reason);
+void Control_ActuatorStep(void);
 
 /* Pi -> STM32 command receiver. */
 void Communication_Task(void const *argument);

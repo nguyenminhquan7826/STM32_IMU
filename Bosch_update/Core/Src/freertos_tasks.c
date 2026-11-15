@@ -18,8 +18,7 @@ static void Motor_Servo_Task(void const * argument)
     HAL_GPIO_WritePin(L_EN_GPIO_Port, L_EN_Pin, GPIO_PIN_SET);
 
     for(;;) {
-        Motor_SetSpeed(motorSpeed);   // motorSpeed do Encoder_Task + PID tính
-        Servo_SetAngle(steerAngle);   // steerAngle do Communication_Task cập nhật
+        Control_ActuatorStep();
         osDelay(20); // 50Hz update rate
     }
 }

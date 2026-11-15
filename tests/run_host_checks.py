@@ -7,17 +7,20 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 SRC='Bosch_update/Core/Src/'
 CASES={
+ 'command_uart':['tests/test_command_uart.c',SRC+'communication.c',SRC+'telemetry_format.c',SRC+'command_guard.c'],
+ 'command_guard':['tests/test_command_guard.c',SRC+'command_guard.c'],
+ 'actuator_gate':['tests/test_actuator_gate.c',SRC+'actuator_gate.c',SRC+'command_guard.c'],
  'clock':['tests/test_clock_diag.c',SRC+'clock_diag.c'],
  'imu_startup':['tests/test_imu_startup.c',SRC+'imu.c',SRC+'imu_config.c'],
  'i2c_recovery':['tests/test_imu_bus_recovery.c',SRC+'imu_bus_recovery.c'],
  'imu_config':['tests/test_imu_config.c',SRC+'imu_config.c'],
  'encoder_counter':['tests/test_encoder_counter.c',SRC+'encoder_counter.c'],
- 'encoder_task':['tests/test_encoder_task.c',SRC+'encoder.c',SRC+'encoder_counter.c'],
+ 'encoder_task':['tests/test_encoder_task.c',SRC+'encoder.c',SRC+'encoder_counter.c',SRC+'command_guard.c'],
  'telemetry_format':['tests/test_telemetry_format.c',SRC+'telemetry_format.c'],
- 'communication_v2':['tests/test_communication_task.c',SRC+'communication.c',SRC+'telemetry_format.c'],
- 'communication_v1':['tests/test_communication_task.c',SRC+'communication.c',SRC+'telemetry_format.c']}
+ 'communication_v2':['tests/test_communication_task.c',SRC+'communication.c',SRC+'telemetry_format.c',SRC+'command_guard.c'],
+ 'communication_v1':['tests/test_communication_task.c',SRC+'communication.c',SRC+'telemetry_format.c',SRC+'command_guard.c']}
 def main():
- p=argparse.ArgumentParser(description=__doc__);p.add_argument('--receiver');p.add_argument('--audit');p.add_argument('--sanitize',action='store_true');a=p.parse_args()
+ p=argparse.ArgumentParser(description=__doc__);p.add_argument('--receiver');p.add_argument('--audit');p.add_argument('--sanitize',action='store_true');p.add_argument('--command-probe');a=p.parse_args()
  if bool(a.receiver)!=bool(a.audit):p.error('--receiver and --audit must be supplied together')
  with tempfile.TemporaryDirectory(prefix='stm32-host-') as tmp:
   tmp=Path(tmp)
@@ -37,4 +40,11 @@ def main():
     subprocess.run(['python3',str(Path(a.audit).resolve()),str(log),str(csv),'--gyro-sign','1','--output',str(report)],capture_output=True,text=True,check=True)
     assert json.loads(report.read_text())['passed']
     print(name+' C task -> C++ -> independent audit: PASS',flush=True)
+  if a.command_probe:
+   binary=tmp/'command_wire'
+   subprocess.run(['gcc','-std=c11','-Wall','-Wextra','-Werror','-IBosch_update/Core/Inc','tests/test_command_wire.c',SRC+'command_guard.c','-o',str(binary)],cwd=ROOT,check=True)
+   commands=subprocess.check_output([a.command_probe,'--emit-commands'])
+   replies=subprocess.run([str(binary)],input=commands,capture_output=True,check=True).stdout
+   subprocess.run([a.command_probe,'--verify-acks'],input=replies,check=True)
+   print('C++ CTL -> actual C command guard -> C++ ACK: PASS',flush=True)
 if __name__=='__main__':main()

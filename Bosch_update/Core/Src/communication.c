@@ -63,6 +63,8 @@ static uint32_t telemetry_sequence;
 
 volatile uint32_t g_uart_tx_drop_count;
 volatile uint32_t g_uart_tx_truncate_count;
+volatile CommandGuard g_command_guard = {.servo = COMMAND_SERVO_CENTER};
+static volatile uint8_t rx_overflow;
 
 static void RingBuffer_Put(RingBuffer_t *ring, uint8_t value)
 {
@@ -73,7 +75,7 @@ static void RingBuffer_Put(RingBuffer_t *ring, uint8_t value)
     {
         ring->buffer[ring->head] = value;
         ring->head = next;
-    }
+    } else { rx_overflow = 1U; }
 }
 
 static int RingBuffer_Get(RingBuffer_t *ring, uint8_t *value)
@@ -185,24 +187,45 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *uart)
     }
 }
 
+void Control_GetCommand(CommandGuard *output)
+{
+    taskENTER_CRITICAL();
+    *output = g_command_guard;
+    CommandGuard_Tick(output, HAL_GetTick());
+    g_command_guard = *output;
+    if (!output->armed || output->speed <= 0.0f) motorSpeed = 0;
+    taskEXIT_CRITICAL();
+}
+void Control_Stop(uint8_t reason)
+{
+    CommandGuard snapshot;
+    taskENTER_CRITICAL();
+    snapshot = g_command_guard;
+    CommandGuard_Stop(&snapshot, reason);
+    g_command_guard = snapshot;
+    if (!snapshot.armed || snapshot.speed <= 0.0f) motorSpeed = 0;
+    taskEXIT_CRITICAL();
+}
 void Parse_Command(char *rx_buffer)
 {
-    if ((rx_buffer != NULL) &&
-        (strncmp(rx_buffer, "CMD", 3U) == 0))
-    {
-        float speed_mps;
-        int angle;
-
-        if (sscanf(
-                rx_buffer,
-                "CMD,%f,%d",
-                &speed_mps,
-                &angle) == 2)
-        {
-            pid.setpoint = speed_mps;
-            steerAngle = angle;
-        }
-    }
+    CommandGuard snapshot;
+    uint32_t seq, now = HAL_GetTick();
+    int result;
+    char payload[96], reply[112];
+    if (!rx_buffer || strncmp(rx_buffer, "CTL,", 4)) return;
+    taskENTER_CRITICAL();
+    snapshot = g_command_guard;
+    result = CommandGuard_Process(&snapshot, rx_buffer, now, &seq);
+    g_command_guard = snapshot;
+    if (!snapshot.armed || snapshot.speed <= 0.0f) motorSpeed = 0;
+    taskEXIT_CRITICAL();
+    /* ACK means accepted setpoint, not measured physical actuation. */
+    snprintf(payload, sizeof(payload), "ACK,1,%lu,%u,%d,%lu,%lu",
+             (unsigned long)seq, snapshot.armed, result,
+             (unsigned long)now, (unsigned long)snapshot.sequence);
+    snprintf(reply, sizeof(reply), "%s,%04X\r\n", payload,
+             Command_CRC(payload, strlen(payload)));
+    UART_Send_IT(reply);
 }
 
 
@@ -239,9 +262,14 @@ void Communication_Task(void const *argument)
     static uint16_t command_index;
     uint32_t last_telemetry_ms;
     uint8_t value;
+    uint8_t discard_line = 0U;
+    CommandGuard initial;
 
     (void)argument;
 
+    CommandGuard_Init(&initial);
+    g_command_guard = initial;
+    rx_overflow = 0U;
     rx_fifo.head = 0U;
     rx_fifo.tail = 0U;
     command_index = 0U;
@@ -252,15 +280,25 @@ void Communication_Task(void const *argument)
 
     for (;;)
     {
+        if (rx_overflow) {
+            taskENTER_CRITICAL();
+            rx_fifo.tail = rx_fifo.head;
+            rx_overflow = 0U;
+            taskEXIT_CRITICAL();
+            command_index = 0U;
+            discard_line = 1U;
+            Control_Stop(COMMAND_PARSE);
+        }
         while (RingBuffer_Get(&rx_fifo, &value) != 0)
         {
             if (value == (uint8_t)'\n')
             {
                 command_buffer[command_index] = '\0';
-                Parse_Command(command_buffer);
+                if (!discard_line) Parse_Command(command_buffer);
+                discard_line = 0U;
                 command_index = 0U;
             }
-            else if (value != (uint8_t)'\r')
+            else if (!discard_line && value != (uint8_t)'\r')
             {
                 if (command_index <
                     (uint16_t)(sizeof(command_buffer) - 1U))
@@ -271,6 +309,8 @@ void Communication_Task(void const *argument)
                 else
                 {
                     command_index = 0U;
+                    discard_line = 1U;
+                    Control_Stop(COMMAND_PARSE);
                 }
             }
         }

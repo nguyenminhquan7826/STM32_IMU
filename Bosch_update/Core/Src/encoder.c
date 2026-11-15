@@ -1,6 +1,7 @@
 #include "encoder.h"
 #include "encoder_counter.h"
 
+#include "communication.h"
 #include "FreeRTOS.h"
 #include "cmsis_os.h"
 #include "task.h"
@@ -70,6 +71,7 @@ void Encoder_Task(void const *argument)
 {
     TickType_t last_wake_time;
     EncoderCounterState counter;
+    uint32_t consumed_stop_generation = 0U;
     const float metres_per_count = GEAR_RATIO * (2.0f*M_PI*WHEEL_RADIUS_M)/PULSES_PER_REV;
     (void)argument;
     g_encoder_task_status.start_status = HAL_TIM_Encoder_Start(&htim3, TIM_CHANNEL_ALL);
@@ -112,7 +114,25 @@ void Encoder_Task(void const *argument)
         g_encoder_latest.valid = 1U;
         g_encoder_task_status.last_interval_ms = sample.interval_ms;
         taskEXIT_CRITICAL();
-        motorSpeed = (int)PID_Update(&pid, sample.speed_mps, sample.interval_ms*.001f);
+        {
+            CommandGuard command;
+            taskENTER_CRITICAL();
+            Control_GetCommand(&command);
+            if (command.stop_generation != consumed_stop_generation) {
+                PID_Reset(&pid);
+                consumed_stop_generation = command.stop_generation;
+            }
+            /* This task is the only writer of PID internals/setpoint. */
+            if (!command.armed || command.speed <= 0.0f) {
+                pid.setpoint = 0.0f;
+                PID_Reset(&pid);
+                motorSpeed = 0;
+            } else {
+                pid.setpoint = command.speed;
+                motorSpeed = (int)PID_Update(&pid, sample.speed_mps, sample.interval_ms*.001f);
+            }
+            taskEXIT_CRITICAL();
+        }
         flag = 1U;
     }
 }
